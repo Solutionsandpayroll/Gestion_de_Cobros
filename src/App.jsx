@@ -173,17 +173,18 @@ function App() {
       const templateWb = new ExcelJS.Workbook()
       await templateWb.xlsx.load(fixedBuffer)
       const ws = templateWb.worksheets[0]
+      ws.properties.outlineProperties = { summaryBelow: true, summaryRight: false }
 
-      // Mapear encabezados de fila 1 en la plantilla
+      // Mapear encabezados de fila 1 en la plantilla (+ "Total cartera" para el subtotal)
       const colMap = {}
       ws.getRow(1).eachCell({ includeEmpty: false }, (cell, col) => {
         const val = String(cell.value ?? '').trim()
-        if (CAMPOS.includes(val)) colMap[val] = col
+        if (CAMPOS.includes(val) || val === 'Total cartera' || val === '%') colMap[val] = col
       })
 
       // Capturar estilos de referencia desde fila 2 (si existe) para aplicar a nuevas filas
       const refStyles = {}
-      for (const campo of CAMPOS) {
+      for (const campo of [...CAMPOS, 'Total cartera', '%']) {
         if (!colMap[campo]) continue
         const refCell = ws.getRow(2).getCell(colMap[campo])
         if (refCell && refCell.style) {
@@ -211,29 +212,211 @@ function App() {
       const lastRow = ws.rowCount
       for (let r = lastRow; r >= 2; r--) ws.spliceRows(r, 1)
 
-      // Escribir datos manteniendo estilos de referencia
-      dataRows.forEach((rowData, i) => {
-        const excelRow = ws.getRow(i + 2)
-        for (const campo of CAMPOS) {
-          if (!colMap[campo]) continue
-          const cell = excelRow.getCell(colMap[campo])
-          if (refStyles[colMap[campo]]) cell.style = JSON.parse(JSON.stringify(refStyles[colMap[campo]]))
-          cell.value = rowData[campo] ?? null
+      // Letra de columna "Total cartera" para la fórmula SUBTOTAL (1-based en ExcelJS → 0-based en xlsx)
+      const colTotalCartera = colMap['Total cartera']
+      const colTotalCarteraLetra = colTotalCartera ? XLSX.utils.encode_col(colTotalCartera - 1) : null
+      const colPrimerVencidoLetra = colMap['Vencido 1 a 30'] ? XLSX.utils.encode_col(colMap['Vencido 1 a 30'] - 1) : null
+      const colSaldoVencerLetra = colMap['Saldo por vencer'] ? XLSX.utils.encode_col(colMap['Saldo por vencer'] - 1) : null
+
+      // Agrupar dataRows por cliente (grupos consecutivos)
+      const grupos = []
+      for (const row of dataRows) {
+        const cliente = String(row['Cliente'] ?? '').trim()
+        const ultimo = grupos[grupos.length - 1]
+        if (ultimo && ultimo.cliente === cliente) {
+          ultimo.rows.push(row)
+        } else {
+          grupos.push({ cliente, rows: [row] })
         }
-        excelRow.commit()
-      })
+      }
+
+      // Escribir por grupo: filas de datos + fila de subtotal por cliente
+      let currentExcelRow = 2
+      const subtotalHLRows = []  // filas de subtotal cuyo cliente contiene "HL"
+      const subtotalAllRows = []  // todas las filas de subtotal (para fórmula %)
+      const clienteSubtotalRow = {}  // cliente (normalizado) → número de fila de subtotal
+      for (const { cliente, rows } of grupos) {
+        const startRow = currentExcelRow
+
+        for (const rowData of rows) {
+          const excelRow = ws.getRow(currentExcelRow)
+          for (const campo of CAMPOS) {
+            if (!colMap[campo]) continue
+            const cell = excelRow.getCell(colMap[campo])
+            if (refStyles[colMap[campo]]) cell.style = JSON.parse(JSON.stringify(refStyles[colMap[campo]]))
+            cell.value = rowData[campo] ?? null
+          }
+          // Fórmula SUMA en columna Total cartera
+          if (colTotalCartera && colPrimerVencidoLetra && colSaldoVencerLetra) {
+            const cell = excelRow.getCell(colTotalCartera)
+            if (refStyles[colTotalCartera]) cell.style = JSON.parse(JSON.stringify(refStyles[colTotalCartera]))
+            cell.value = { formula: `SUM(${colPrimerVencidoLetra}${currentExcelRow}:${colSaldoVencerLetra}${currentExcelRow})` }
+          }
+          excelRow.outlineLevel = 1
+          excelRow.commit()
+          currentExcelRow++
+        }
+
+        // Fila de subtotal
+        const endRow = currentExcelRow - 1
+        const subtotalRow = ws.getRow(currentExcelRow)
+        if (colMap['Cliente']) {
+          const cell = subtotalRow.getCell(colMap['Cliente'])
+          if (refStyles[colMap['Cliente']]) cell.style = JSON.parse(JSON.stringify(refStyles[colMap['Cliente']]))
+          cell.font = { ...(cell.font || {}), bold: true }
+          cell.value = `Total ${cliente}`
+        }
+        for (const campo of ['Total cartera', 'Vencido 1 a 30', 'Vencido 31 a 60', 'Vencido 61 a 90', 'Vencido más de 91', 'Saldo por vencer']) {
+          if (!colMap[campo]) continue
+          const colIdx = colMap[campo]
+          const colLetra = XLSX.utils.encode_col(colIdx - 1)
+          const cell = subtotalRow.getCell(colIdx)
+          if (refStyles[colIdx]) cell.style = JSON.parse(JSON.stringify(refStyles[colIdx]))
+          cell.font = { ...(cell.font || {}), bold: true }
+          cell.value = { formula: `SUBTOTAL(9,${colLetra}${startRow}:${colLetra}${endRow})` }
+        }
+        subtotalRow.commit()
+        subtotalAllRows.push(currentExcelRow)
+        clienteSubtotalRow[cliente.trim().toUpperCase()] = currentExcelRow
+        if (/HL/.test(cliente)) subtotalHLRows.push(currentExcelRow)
+        currentExcelRow++
+      }
+
+      // Escribir fórmula % en todas las filas de subtotal (necesita firstFijaRow → se hace aquí)
+      if (colMap['%'] && colMap['Total cartera']) {
+        const colPct = colMap['%']
+        const colTCLetra = XLSX.utils.encode_col(colMap['Total cartera'] - 1)
+        const fijaRow7 = currentExcelRow + 1  // firstFijaRow calculado igual que abajo
+        const refTC = `$${colTCLetra}$${fijaRow7}`
+        for (const rowNum of subtotalAllRows) {
+          const tcLetraRow = `${colTCLetra}${rowNum}`
+          const pctCell = ws.getRow(rowNum).getCell(colPct)
+          if (refStyles[colPct]) pctCell.style = JSON.parse(JSON.stringify(refStyles[colPct]))
+          pctCell.font = { ...(pctCell.font || {}), bold: true }
+          pctCell.numFmt = '0.00%'
+          pctCell.value = { formula: `IF(${refTC}=0,0,${tcLetraRow}/${refTC})` }
+          ws.getRow(rowNum).commit()
+        }
+      }
 
       // Agregar fila vacía de separación y luego las filas fijas al final
-      const firstFijaRow = 2 + dataRows.length + 1
-      const separador = ws.getRow(firstFijaRow - 1)
+      const lastDataRow = currentExcelRow - 1  // última fila con datos (último "Total [cliente]")
+      const firstFijaRow = currentExcelRow + 1
+      const separador = ws.getRow(currentExcelRow)
       separador.commit()
+
+      // Columnas que llevan SUBTOTAL dinámico en la primera fila fija
+      const camposSubtotal = ['Total cartera', 'Vencido 1 a 30', 'Vencido 31 a 60', 'Vencido 61 a 90', 'Vencido más de 91', 'Saldo por vencer']
+      const subtotalCols = {}
+      for (const campo of camposSubtotal) {
+        if (colMap[campo]) {
+          subtotalCols[colMap[campo]] = XLSX.utils.encode_col(colMap[campo] - 1)
+        }
+      }
+
+      const mesesES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+      const mesActual = mesesES[new Date().getMonth()]
 
       fijasCaptured.forEach((fija, i) => {
         const excelRow = ws.getRow(firstFijaRow + i)
         if (fija.height) excelRow.height = fija.height
         fija.cells.forEach(({ col, value, style, numFmt }) => {
           const cell = excelRow.getCell(col)
-          cell.value = value
+          // En la primera fila fija (fila 7): SUBTOTAL de todo el rango de datos
+          if (i === 0 && subtotalCols[col]) {
+            cell.value = { formula: `SUBTOTAL(9,${subtotalCols[col]}2:${subtotalCols[col]}${lastDataRow})` }
+          // En la primera fila fija (fila 7), columna "%": suma del rango completo
+          } else if (i === 0 && colMap['%'] && col === colMap['%']) {
+            const colPctLetra = XLSX.utils.encode_col(colMap['%'] - 1)
+            cell.value = { formula: `SUM(${colPctLetra}2:${colPctLetra}${lastDataRow})` }
+            cell.numFmt = '0.00%'
+          // En la segunda fila fija (fila 8): SUM solo de las filas "Total HL..."
+          } else if (i === 1 && subtotalCols[col] && subtotalHLRows.length > 0) {
+            const refs = subtotalHLRows.map(r => `${subtotalCols[col]}${r}`).join(',')
+            cell.value = { formula: `SUM(${refs})` }
+          // En la segunda fila fija (fila 8), columna Cliente: mes dinámico
+          } else if (i === 1 && colMap['Cliente'] && col === colMap['Cliente']) {
+            cell.value = `Cartera Grupo HL ${mesActual}`
+          // En la tercera fila fija (fila 9), columna "Vencido 1 a 30": suma de Vencido 31/61/91 de la fila 7
+          } else if (i === 2 && colMap['Vencido 1 a 30'] && col === colMap['Vencido 1 a 30']) {
+            const c31 = subtotalCols[colMap['Vencido 31 a 60']]
+            const c61 = subtotalCols[colMap['Vencido 61 a 90']]
+            const c91 = subtotalCols[colMap['Vencido más de 91']]
+            if (c31 && c61 && c91) {
+              cell.value = { formula: `SUM(${c31}${firstFijaRow},${c61}${firstFijaRow},${c91}${firstFijaRow})` }
+            } else {
+              cell.value = value
+            }
+          // En la cuarta fila fija (fila 10), columna "Vencido 1 a 30": suma de Vencido 31/61/91 de la fila 8
+          } else if (i === 3 && colMap['Vencido 1 a 30'] && col === colMap['Vencido 1 a 30']) {
+            const c31 = subtotalCols[colMap['Vencido 31 a 60']]
+            const c61 = subtotalCols[colMap['Vencido 61 a 90']]
+            const c91 = subtotalCols[colMap['Vencido más de 91']]
+            if (c31 && c61 && c91) {
+              cell.value = { formula: `SUM(${c31}${firstFijaRow + 1},${c61}${firstFijaRow + 1},${c91}${firstFijaRow + 1})` }
+            } else {
+              cell.value = value
+            }
+          // En la cuarta fila fija (fila 10), columna "%": =IF($G$fila9=0,0,G_fila10/$G$fila9)
+          } else if (i === 3 && colMap['%'] && col === colMap['%']) {
+            const colV130Letra = XLSX.utils.encode_col(colMap['Vencido 1 a 30'] - 1)
+            const fila9 = firstFijaRow + 2
+            const fila10 = firstFijaRow + 3
+            cell.value = { formula: `IF($${colV130Letra}$${fila9}=0,0,${colV130Letra}${fila10}/$${colV130Letra}$${fila9})` }
+            cell.numFmt = '0.00%'
+          // Fila 13 (i=6), columna "Vencido 1 a 30": fila9 - fila10
+          } else if (i === 6 && colMap['Vencido 1 a 30'] && col === colMap['Vencido 1 a 30']) {
+            const colLetra = XLSX.utils.encode_col(colMap['Vencido 1 a 30'] - 1)
+            const fila9 = firstFijaRow + 2
+            const fila10 = firstFijaRow + 3
+            cell.value = { formula: `${colLetra}${fila9}-${colLetra}${fila10}` }
+          // Fila 18 (i=11), columna "Vencido 1 a 30": fila13 - SUMA(fila14:fila17)
+          } else if (i === 11 && colMap['Vencido 1 a 30'] && col === colMap['Vencido 1 a 30']) {
+            const colLetra = XLSX.utils.encode_col(colMap['Vencido 1 a 30'] - 1)
+            const fila13 = firstFijaRow + 6
+            const fila14 = firstFijaRow + 7
+            const fila17 = firstFijaRow + 10
+            cell.value = { formula: `${colLetra}${fila13}-SUM(${colLetra}${fila14}:${colLetra}${fila17})` }
+          // Filas 14-17 (i=7..10), columna "Vencido 1 a 30": suma Vencido31+61+91 del subtotal del cliente específico
+          } else if (i >= 7 && i <= 10 && colMap['Vencido 1 a 30'] && col === colMap['Vencido 1 a 30']) {
+            const clientesFijas = [
+              'PUNTO MEDICAL DISTRIBUCIONES SAS',
+              'REJIMETAL SAS',
+              'DINTERWEB SAS',
+              'SOLUTIONS & PAYROLL PERU S.A.C',
+            ]
+            const clienteTarget = clientesFijas[i - 7]
+            const subtotalFila = clienteSubtotalRow[clienteTarget.toUpperCase()]
+            const c31 = subtotalCols[colMap['Vencido 31 a 60']]
+            const c61 = subtotalCols[colMap['Vencido 61 a 90']]
+            const c91 = subtotalCols[colMap['Vencido más de 91']]
+            if (subtotalFila && c31 && c61 && c91) {
+              cell.value = { formula: `SUM(${c31}${subtotalFila},${c61}${subtotalFila},${c91}${subtotalFila})` }
+            } else {
+              cell.value = value
+            }
+          // Filas 14-18 (i=7..11), columna "%": =IF($G$fila13=0,0,G{filaActual}/$G$fila13)
+          } else if (i >= 7 && i <= 11 && colMap['%'] && col === colMap['%']) {
+            const colV130Letra = XLSX.utils.encode_col(colMap['Vencido 1 a 30'] - 1)
+            const fila13 = firstFijaRow + 6
+            const filaActual = firstFijaRow + i
+            cell.value = { formula: `IF($${colV130Letra}$${fila13}=0,0,${colV130Letra}${filaActual}/$${colV130Letra}$${fila13})` }
+            cell.numFmt = '0.00%'
+          // Fila 21 (i=14), columna "Vencido 1 a 30": fila10 + fila18
+          } else if (i === 14 && colMap['Vencido 1 a 30'] && col === colMap['Vencido 1 a 30']) {
+            const colLetra = XLSX.utils.encode_col(colMap['Vencido 1 a 30'] - 1)
+            cell.value = { formula: `${colLetra}${firstFijaRow + 3}+${colLetra}${firstFijaRow + 11}` }
+          // Fila 22 (i=15), columna "Vencido 1 a 30": SUMA(fila14:fila17)
+          } else if (i === 15 && colMap['Vencido 1 a 30'] && col === colMap['Vencido 1 a 30']) {
+            const colLetra = XLSX.utils.encode_col(colMap['Vencido 1 a 30'] - 1)
+            cell.value = { formula: `SUM(${colLetra}${firstFijaRow + 7}:${colLetra}${firstFijaRow + 10})` }
+          // Fila 23 (i=16), columna "Vencido 1 a 30": SUMA(fila21:fila22)
+          } else if (i === 16 && colMap['Vencido 1 a 30'] && col === colMap['Vencido 1 a 30']) {
+            const colLetra = XLSX.utils.encode_col(colMap['Vencido 1 a 30'] - 1)
+            cell.value = { formula: `SUM(${colLetra}${firstFijaRow + 14}:${colLetra}${firstFijaRow + 15})` }
+          } else {
+            cell.value = value
+          }
           if (style) cell.style = JSON.parse(JSON.stringify(style))
           if (numFmt) cell.numFmt = numFmt
         })
