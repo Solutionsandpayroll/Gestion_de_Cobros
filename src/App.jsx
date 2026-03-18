@@ -179,12 +179,12 @@ function App() {
       const colMap = {}
       ws.getRow(1).eachCell({ includeEmpty: false }, (cell, col) => {
         const val = String(cell.value ?? '').trim()
-        if (CAMPOS.includes(val) || val === 'Total cartera' || val === '%') colMap[val] = col
+        if (CAMPOS.includes(val) || val === 'Total cartera' || val === '%' || val === 'Días' || val === 'Dias') colMap[val] = col
       })
 
       // Capturar estilos de referencia desde fila 2 (si existe) para aplicar a nuevas filas
       const refStyles = {}
-      for (const campo of [...CAMPOS, 'Total cartera', '%']) {
+      for (const campo of [...CAMPOS, 'Total cartera', '%', 'Días', 'Dias']) {
         if (!colMap[campo]) continue
         const refCell = ws.getRow(2).getCell(colMap[campo])
         if (refCell && refCell.style) {
@@ -217,6 +217,9 @@ function App() {
       const colTotalCarteraLetra = colTotalCartera ? XLSX.utils.encode_col(colTotalCartera - 1) : null
       const colPrimerVencidoLetra = colMap['Vencido 1 a 30'] ? XLSX.utils.encode_col(colMap['Vencido 1 a 30'] - 1) : null
       const colSaldoVencerLetra = colMap['Saldo por vencer'] ? XLSX.utils.encode_col(colMap['Saldo por vencer'] - 1) : null
+      const colDias = colMap['Días'] || colMap['Dias']
+      const colFechaVenc = colMap['Fecha de vencimiento'] || colMap['Fecha vencimiento']
+      const colFechaVencLetra = colFechaVenc ? XLSX.utils.encode_col(colFechaVenc - 1) : null
 
       // Agrupar dataRows por cliente (grupos consecutivos)
       const grupos = []
@@ -251,6 +254,12 @@ function App() {
             const cell = excelRow.getCell(colTotalCartera)
             if (refStyles[colTotalCartera]) cell.style = JSON.parse(JSON.stringify(refStyles[colTotalCartera]))
             cell.value = { formula: `SUM(${colPrimerVencidoLetra}${currentExcelRow}:${colSaldoVencerLetra}${currentExcelRow})` }
+          }
+          // Fórmula de Días: HOY() - Fecha de vencimiento de la misma fila
+          if (colDias && colFechaVencLetra) {
+            const cell = excelRow.getCell(colDias)
+            if (refStyles[colDias]) cell.style = JSON.parse(JSON.stringify(refStyles[colDias]))
+            cell.value = { formula: `TODAY()-${colFechaVencLetra}${currentExcelRow}` }
           }
           excelRow.outlineLevel = 1
           excelRow.commit()
