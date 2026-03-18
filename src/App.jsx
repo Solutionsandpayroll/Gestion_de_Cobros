@@ -508,22 +508,22 @@ function App() {
                 <li>
                   <span className="step-number">1</span>
                   <div>
-                    <strong>Paso 1</strong>
-                    <p>Descripción del primer paso</p>
+                    <strong>Subir archivo SIGO</strong>
+                    <p>Sube el archivo Excel exportado desde SIGO.</p>
                   </div>
                 </li>
                 <li>
                   <span className="step-number">2</span>
                   <div>
-                    <strong>Paso 2</strong>
-                    <p>Descripción del segundo paso</p>
+                    <strong>Seleccionar clientes</strong>
+                    <p>Selecciona los clientes que deseas incluir en el reporte.</p>
                   </div>
                 </li>
                 <li>
                   <span className="step-number">3</span>
                   <div>
-                    <strong>Paso 3</strong>
-                    <p>Descripción del tercer paso</p>
+                    <strong>Generar formato</strong>
+                    <p>Haz clic en Generar Formato para descargar el Excel final.</p>
                   </div>
                 </li>
               </ol>

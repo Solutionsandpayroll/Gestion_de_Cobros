@@ -2,16 +2,11 @@
 
 Aplicación web interna de **Solutions & Payroll** para gestionar cobros por cliente a partir de la plantilla SIGO de cuentas por cobrar.
 
-## ¿Qué hace esta aplicación?
+## Cómo usar esta aplicación
 
-1. El usuario sube el archivo Excel exportado desde SIGO.
-2. La app lee automáticamente la columna **Cliente** desde la fila 7 y lista todos los clientes únicos.
-3. El usuario selecciona o deselecciona clientes (todos seleccionados por defecto). Incluye buscador.
-4. Al presionar **Generar Formato**, se descarga un Excel basado en la plantilla interna con:
-   - Datos agrupados por cliente, con fila **"Total [cliente]"** en negrilla al final de cada grupo.
-   - Fórmulas automáticas en cada fila de datos y en cada subtotal.
-   - Filas fijas de la plantilla (723) al final, con fórmulas dinámicas actualizadas.
-   - Filas de datos agrupadas con la función **Agrupar** de Excel (nivel 1), colapsables por cliente.
+1. Sube el archivo Excel exportado desde SIGO.
+2. Selecciona los clientes que deseas incluir en el reporte (todos vienen seleccionados por defecto y puedes usar el buscador).
+3. Haz clic en **Generar Formato** para descargar el Excel final con los datos, subtotales, fórmulas y agrupaciones.
 
 ## Tecnologías
 
