@@ -44,11 +44,11 @@ function App() {
         console.log('--- Celdas encontradas en fila 7 ---')
         row7Entries.forEach(({ key, cell }) => console.log(`  ${key}:`, JSON.stringify(cell.v), '| tipo:', cell.t))
 
-        // Buscar la celda que diga "Cliente"
-        const clienteEntry = row7Entries.find(({ cell }) => String(cell.v ?? '').trim() === 'Cliente')
+        // Buscar la columna de cliente (acepta "Cliente" o "Nombre")
+        const clienteEntry = encontrarColumna(row7Entries, 'Cliente')
 
         if (!clienteEntry) {
-          setClientesError('No se encontró "Cliente" en la fila 7 del archivo.')
+          setClientesError('No se encontró "Cliente" ni "Nombre" en la fila 7 del archivo.')
           setClientes([])
           console.log('Valores encontrados en fila 7:', row7Entries.map(e => e.cell.v))
           return
@@ -98,6 +98,22 @@ function App() {
 
   const CAMPOS = ['Cliente', 'Documento', 'Fecha vencimiento', 'Vencido 1 a 30', 'Vencido 31 a 60', 'Vencido 61 a 90', 'Vencido más de 91', 'Saldo por vencer']
 
+  // Mapeo de nombres alternativos de columnas → nombre estándar en CAMPOS
+  const ALTERNOS = {
+    'Nombre': 'Cliente',
+    'Cliente': 'Cliente',
+  }
+
+  // Busca una columna en fila 7 probando el nombre principal y sus alternativos
+  const encontrarColumna = (row7Entries, nombrePrincipal) => {
+    const candidatos = [nombrePrincipal, ...Object.entries(ALTERNOS).filter(([, v]) => v === nombrePrincipal).map(([k]) => k)]
+    for (const nombre of candidatos) {
+      const entry = row7Entries.find(({ cell }) => String(cell.v ?? '').trim() === nombre)
+      if (entry) return entry
+    }
+    return null
+  }
+
   const generarFormato = async () => {
     if (!excelBuffer || clientesSeleccionados.size === 0) return
     setGenerando(true)
@@ -111,10 +127,12 @@ function App() {
         .map(k => { try { return { decoded: XLSX.utils.decode_cell(k), cell: sigoSheet[k] } } catch { return null } })
         .filter(Boolean)
 
+      const sigoRow7Entries = sigoEntries.filter(e => e.decoded.r === 6)
       const sigoColMap = {}
-      for (const entry of sigoEntries.filter(e => e.decoded.r === 6)) {
+      for (const entry of sigoRow7Entries) {
         const val = String(entry.cell.v ?? '').trim()
-        if (CAMPOS.includes(val)) sigoColMap[val] = entry.decoded.c
+        const normalizado = ALTERNOS[val] || val
+        if (CAMPOS.includes(normalizado)) sigoColMap[normalizado] = entry.decoded.c
       }
 
       const sigoClienteCol = sigoColMap['Cliente']
@@ -221,24 +239,30 @@ function App() {
       const colFechaVenc = colMap['Fecha de vencimiento'] || colMap['Fecha vencimiento']
       const colFechaVencLetra = colFechaVenc ? XLSX.utils.encode_col(colFechaVenc - 1) : null
 
-      // Agrupar dataRows por cliente (grupos consecutivos)
+      // Agrupar dataRows por cliente (grupos consecutivos), separando HL al final
       const grupos = []
+      const gruposHL = []
       for (const row of dataRows) {
         const cliente = String(row['Cliente'] ?? '').trim()
-        const ultimo = grupos[grupos.length - 1]
+        const esHL = /HL/.test(cliente)
+        const target = esHL ? gruposHL : grupos
+        const ultimo = target[target.length - 1]
         if (ultimo && ultimo.cliente === cliente) {
           ultimo.rows.push(row)
         } else {
-          grupos.push({ cliente, rows: [row] })
+          target.push({ cliente, rows: [row] })
         }
       }
+      grupos.sort((a, b) => a.cliente.localeCompare(b.cliente, 'es'))
+      gruposHL.sort((a, b) => a.cliente.localeCompare(b.cliente, 'es'))
+      const todosGrupos = [...grupos, ...gruposHL]
 
       // Escribir por grupo: filas de datos + fila de subtotal por cliente
       let currentExcelRow = 2
       const subtotalHLRows = []  // filas de subtotal cuyo cliente contiene "HL"
       const subtotalAllRows = []  // todas las filas de subtotal (para fórmula %)
       const clienteSubtotalRow = {}  // cliente (normalizado) → número de fila de subtotal
-      for (const { cliente, rows } of grupos) {
+      for (const { cliente, rows } of todosGrupos) {
         const startRow = currentExcelRow
 
         for (const rowData of rows) {
